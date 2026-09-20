@@ -1,8 +1,8 @@
-"""统一飞控接口的数据类型。
+"""Public data types for the unified flight-controller API.
 
-经纬度采用 WGS84 大地坐标；高度默认是相对 Home 点的米制高度（相对高），
-与 MAVLink ``GLOBAL_POSITION_INT.relative_alt`` 一致，而不是海拔椭球高。
-姿态角采用航空常用的欧拉角：滚转 / 俯仰 / 偏航，单位为度。
+Coordinates are WGS84. Altitude is metres above home
+(``GLOBAL_POSITION_INT.relative_alt``), not ellipsoid height.
+Attitude is aerospace Euler angles in degrees.
 """
 
 from __future__ import annotations
@@ -12,12 +12,11 @@ from enum import Enum
 
 
 class AutopilotType(Enum):
-    """由 HEARTBEAT.autopilot 识别出的飞控固件族。
+    """Firmware family from HEARTBEAT.autopilot.
 
-    取值对应 MAVLink ``MAV_AUTOPILOT`` 枚举中的常用项：
     - PX4: ``MAV_AUTOPILOT_PX4`` (12)
     - ARDUPILOT: ``MAV_AUTOPILOT_ARDUPILOTMEGA`` (3)
-    - UNKNOWN: 已收到心跳但固件不在上述两类，模式映射不可用
+    - UNKNOWN: heartbeat seen but firmware is neither; mode mapping unavailable
     """
 
     PX4 = "px4"
@@ -25,12 +24,70 @@ class AutopilotType(Enum):
     UNKNOWN = "unknown"
 
 
-class FlightMode(Enum):
-    """与具体固件无关的语义飞行模式。
+class VehicleClass(Enum):
+    """Airframe family from HEARTBEAT.type (MAV_TYPE).
 
-    应用层只使用这些取值；底层再翻译成 PX4 ``custom_mode`` 位域
-    或 ArduPilot 多旋翼整数模式号。``UNKNOWN`` 仅用于遥测回读，
-    禁止传入 ``set_mode``。
+    Applications use the same verbs for every class. The backend picks the
+    mode table and capability profile. Rovers, boats, and other non-aircraft
+    types are ``UNKNOWN``.
+    """
+
+    COPTER = "copter"
+    PLANE = "plane"
+    VTOL = "vtol"
+    UNKNOWN = "unknown"
+
+
+class Capability(Enum):
+    """One action the unified API may expose.
+
+    Presence in ``CapabilityProfile`` means the library will send the command.
+    Absence means the call fails immediately with ``UnsupportedCapabilityError``.
+    """
+
+    ARM = "arm"
+    TAKEOFF = "takeoff"
+    GOTO = "goto"
+    HOLD = "hold"
+    LAND = "land"
+    RTL = "rtl"
+    SET_MODE = "set_mode"
+    MISSION = "mission"
+    OFFBOARD = "offboard"
+    GIMBAL = "gimbal"
+
+
+@dataclass(frozen=True)
+class CapabilityProfile:
+    """Read-only actions this vehicle can perform through this SDK.
+
+    Attributes:
+        vehicle_class: Airframe used to build the set.
+        supported: Capabilities that are implemented and valid for the airframe.
+    """
+
+    vehicle_class: VehicleClass
+    supported: frozenset[Capability]
+
+    def supports(self, capability: Capability) -> bool:
+        """Return True if ``capability`` is in ``supported``.
+
+        Args:
+            capability: One Capability enum member.
+        Returns:
+            True if the call is allowed after connect.
+        """
+
+        return capability in self.supported
+
+
+class FlightMode(Enum):
+    """Firmware-agnostic flight mode.
+
+    Applications use these values only. The backend maps them to PX4
+    ``custom_mode`` or ArduPilot mode numbers for the current vehicle
+    class. ``UNKNOWN`` is telemetry-only and must not be passed to
+    ``set_mode``.
     """
 
     MANUAL = "manual"
@@ -44,9 +101,9 @@ class FlightMode(Enum):
 
 
 class GpsFixType(Enum):
-    """GPS 定位质量，对应 ``GPS_RAW_INT.fix_type``（MAV_GPS_FIX_TYPE）。
+    """GPS quality from ``GPS_RAW_INT.fix_type`` (MAV_GPS_FIX_TYPE).
 
-    起飞安全检查要求 ``FIX_3D`` 及以上（取值 >= 3）。
+    Takeoff requires ``FIX_3D`` or better (value >= 3).
     """
 
     NO_GPS = 0
@@ -60,12 +117,12 @@ class GpsFixType(Enum):
 
 @dataclass(frozen=True)
 class Position:
-    """地理位置。
+    """Geographic position.
 
     Attributes:
-        latitude_deg: 纬度，单位度，闭区间 [-90, 90]。正值北纬。
-        longitude_deg: 经度，单位度，闭区间 [-180, 180]。正值东经。
-        altitude_m: 相对 Home 的高度，单位米。起飞后通常 > 0；未知时为 None。
+        latitude_deg: Latitude in degrees, [-90, 90]. North is positive.
+        longitude_deg: Longitude in degrees, [-180, 180]. East is positive.
+        altitude_m: Metres above home. Usually > 0 after takeoff; None if unknown.
     """
 
     latitude_deg: float
@@ -75,16 +132,15 @@ class Position:
 
 @dataclass(frozen=True)
 class Attitude:
-    """机体姿态（ZYX 欧拉角，航空约定）。
+    """Body attitude (ZYX Euler, aerospace convention).
 
-    滚转/俯仰/偏航由 MAVLink ``ATTITUDE`` 的弧度值换算为度：
-    ``deg = rad * 180 / pi``。偏航 0 度表示北，顺时针增大至 360（若来源
-    为 ``yaw`` 弧度则先规范到 (-pi, pi]，再转度）。
+    MAVLink ``ATTITUDE`` radians are converted with ``deg = rad * 180 / pi``.
+    Yaw 0 deg is north.
 
     Attributes:
-        roll_deg: 滚转，单位度，典型范围 [-180, 180]。右翼下沉为正。
-        pitch_deg: 俯仰，单位度，典型范围 [-90, 90]。机头上仰为正。
-        yaw_deg: 偏航，单位度，范围 (-180, 180]。机头北偏东为正。
+        roll_deg: Roll in degrees, typically [-180, 180]. Right-wing down positive.
+        pitch_deg: Pitch in degrees, typically [-90, 90]. Nose up positive.
+        yaw_deg: Yaw in degrees, (-180, 180]. Nose east of north positive.
     """
 
     roll_deg: float
@@ -94,12 +150,12 @@ class Attitude:
 
 @dataclass(frozen=True)
 class Battery:
-    """电源状态，来自 ``SYS_STATUS`` 或 ``BATTERY_STATUS``。
+    """Power state from ``SYS_STATUS`` or ``BATTERY_STATUS``.
 
     Attributes:
-        voltage_v: 电池电压，单位伏特。未知时为 None。合法范围通常 (0, 60]。
-        remaining_percent: 剩余电量百分比，闭区间 [0, 100]。未知时为 None。
-        current_a: 电流，单位安培，放电为正。未知时为 None。
+        voltage_v: Pack voltage in volts. None if unknown. Typical (0, 60].
+        remaining_percent: Remaining charge percent, [0, 100]. None if unknown.
+        current_a: Current in amperes, discharge positive. None if unknown.
     """
 
     voltage_v: float | None
@@ -109,20 +165,24 @@ class Battery:
 
 @dataclass(frozen=True)
 class Telemetry:
-    """一次遥测快照。字段在对应 MAVLink 消息尚未到达时可为 None。
+    """One telemetry snapshot. Fields are None until the matching MAVLink message arrives.
 
     Attributes:
-        autopilot: 已识别的固件类型；尚未心跳时为 None。
-        mode: 语义飞行模式。
-        armed: 是否已解锁。True 表示螺旋桨可能转动。
-        position: 全球位置；无 ``GLOBAL_POSITION_INT`` 时为 None。
-        attitude: 姿态；无 ``ATTITUDE`` 时为 None。
-        battery: 电池；无电源消息时为 None。
-        gps_fix: GPS 定位类型；无 ``GPS_RAW_INT`` 时为 None。
-        satellites_visible: 可见卫星数，范围 [0, 64] 量级；未知为 None。
+        autopilot: Firmware type; None before heartbeat.
+        vehicle_class: Airframe class; None before heartbeat.
+        capabilities: Actions allowed on this link; None before heartbeat.
+        mode: Semantic flight mode.
+        armed: True if motors may spin.
+        position: Global position; None without ``GLOBAL_POSITION_INT``.
+        attitude: Attitude; None without ``ATTITUDE``.
+        battery: Battery; None without power messages.
+        gps_fix: GPS fix type; None without ``GPS_RAW_INT``.
+        satellites_visible: Visible satellites, roughly [0, 64]; None if unknown.
     """
 
     autopilot: AutopilotType | None
+    vehicle_class: VehicleClass | None
+    capabilities: CapabilityProfile | None
     mode: FlightMode
     armed: bool
     position: Position | None
@@ -133,21 +193,59 @@ class Telemetry:
 
 
 @dataclass(frozen=True)
-class ConnectionConfig:
-    """连接到飞控的参数。
+class MissionItem:
+    """One mission waypoint (WGS84, relative-home altitude).
 
     Attributes:
-        uri: 连接串，支持：
-            - ``udp:host:port`` — UDP 监听（PX4 SITL 默认 ``udp:127.0.0.1:14540``）
-            - ``udpin:host:port`` / ``udpout:host:port`` — 显式方向
-            - ``tcp:host:port`` — TCP 客户端（ArduPilot SITL 常见 ``tcp:127.0.0.1:5760``）
-            - ``serial:device:baud`` — 串口，例如 ``serial:/dev/ttyACM0:57600``
-        source_system: 本端 MAVLink 系统 ID，整数 [1, 255]，默认 255（地面站惯例）。
-        source_component: 本端组件 ID，整数 [1, 255]，默认 190。
-        skip_gps_check: True 时起飞不要求 3D 定位，仅建议用于 SITL。默认 False。
+        latitude_deg: Latitude in degrees, [-90, 90].
+        longitude_deg: Longitude in degrees, [-180, 180].
+        altitude_m: Metres above home, (0, 500].
+        command: MAV_CMD id. Default 16 (NAV_WAYPOINT).
+        hold_s: Loiter time at the point in seconds, >= 0. Default 0.
+        accept_radius_m: Acceptance radius in metres, >= 0. Default 2.
+    """
+
+    latitude_deg: float
+    longitude_deg: float
+    altitude_m: float
+    command: int = 16
+    hold_s: float = 0.0
+    accept_radius_m: float = 2.0
+
+
+@dataclass(frozen=True)
+class ConnectionConfig:
+    """How to reach the flight controller.
+
+    Direct vehicle URIs (no mock required)::
+
+        serial:/dev/ttyACM0:57600      USB to the FC
+        serial:/dev/ttyTHS1:921600     Jetson UART to TELEM2
+        serial:/dev/serial0:921600     Raspberry Pi UART
+        udp:127.0.0.1:14540            mavlink-router or PX4 SITL on this host
+        tcp:127.0.0.1:5760             ArduPilot SITL
+
+    MAVLink is unauthenticated by default. ``connect()`` opens a socket or
+    serial port and waits for HEARTBEAT; it is not a login. Anyone who can
+    reach that URI (UDP on the same network, or the serial device) can send
+    commands. Multiple GCS clients on one link are normal. Isolate the
+    network or serial path; MAVLink2 signing is not implemented in this
+    release.
+
+    Attributes:
+        uri: Connection string as above; also ``udpin:`` / ``udpout:``.
+        source_system: Local MAVLink system id, [1, 255], default 1 (same vehicle).
+            Laptop GCS may use 255.
+        source_component: Local component id, [1, 255], default 191
+            (``MAV_COMP_ID_ONBOARD_COMPUTER``). GCS often uses 190. comp=191 sends
+            an onboard-controller HEARTBEAT; any other value sends a GCS HEARTBEAT.
+            Do not use comp=1 (the autopilot's own component id) for a companion —
+            it collides with the FC and ``_is_own_source`` would drop FC heartbeats.
+        skip_gps_check: If True, takeoff does not require 3D GPS. SITL/mock only.
+            Keep False on a real vehicle. Default False.
     """
 
     uri: str
-    source_system: int = 255
-    source_component: int = 190
+    source_system: int = 1
+    source_component: int = 191
     skip_gps_check: bool = False

@@ -1,0 +1,154 @@
+Metadata-Version: 2.4
+Name: drone-fc
+Version: 0.2.0
+Summary: Unified civil Python API for PX4 and ArduPilot (copter, plane, VTOL)
+License: Proprietary
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pymavlink>=2.4.41
+Provides-Extra: plot
+Requires-Dist: matplotlib>=3.8.0; extra == "plot"
+Dynamic: license-file
+
+# Civil flight-controller Python API (MAVLink)
+
+One Python API for **PX4** and **ArduPilot**, across **multicopter, fixed-wing, and VTOL**. Applications do not branch on firmware or airframe.
+
+**Vendors:** start with [docs/供应商集成说明.md](docs/供应商集成说明.md) (install, TELEM2, capability table, acceptance). Internal product notes: [docs/需求文档.md](docs/需求文档.md).
+
+V1 shipped: two firmwares × multicopter (connect, identify, arm, set mode, takeoff, goto, land, RTL, telemetry). Vehicle class and capability checks are in the API so unsupported airframes fail closed. No weapons or mission-strike logic.
+
+## Direct vehicle connection
+
+`connect()` opens the port **and** waits for the autopilot HEARTBEAT. You do not `sleep` afterwards.
+
+```python
+from drone_fc import ConnectionConfig, MavlinkFlightController
+
+# USB to the flight controller
+fc = MavlinkFlightController(ConnectionConfig("serial:/dev/ttyACM0:57600"))
+# Jetson TELEM2:  ConnectionConfig("serial:/dev/ttyTHS1:921600")
+# Raspberry Pi:   ConnectionConfig("serial:/dev/serial0:921600")
+# Local router:   ConnectionConfig("udp:127.0.0.1:14540")
+
+fc.connect()   # linked when this returns
+fc.takeoff(5.0)
+fc.wait_telemetry(
+    lambda s: s.position is not None and s.position.altitude_m is not None and s.position.altitude_m >= 3.5,
+    20.0,
+)
+fc.land()
+fc.disconnect()
+```
+
+Keep `skip_gps_check=False` on a real aircraft (the default). SITL/mock may set it True.
+
+```bash
+python examples/companion_check_link.py --uri serial:/dev/ttyACM0:57600
+python examples/vendor_same_control.py --uri serial:/dev/ttyACM0:57600 --dry-run
+```
+
+Need `dialout` (or equivalent) for serial, matching baud, and TELEM2 configured on the FC. A missing vehicle shows up as `HeartbeatTimeoutError`. This library does not replace RC; if the companion process dies, behaviour is whatever you set on the autopilot (RC loss / onboard loss). Use one `MavlinkFlightController` per control thread.
+
+| URI | Typical use |
+|-----|-------------|
+| `serial:/dev/ttyACM0:57600` | FC USB |
+| `serial:/dev/ttyTHS1:921600` | Jetson UART (TELEM2) |
+| `serial:/dev/serial0:921600` | Raspberry Pi UART |
+| `udp:127.0.0.1:14540` | mavlink-router or PX4 SITL on this host |
+| `tcp:127.0.0.1:5760` | ArduPilot SITL |
+| `udpin:` / `udpout:` | Explicit UDP direction |
+
+Default identity is **onboard computer**: `source_system=1`, `source_component=191`, heartbeat `MAV_TYPE_ONBOARD_CONTROLLER`, about 1 Hz while you call `telemetry` / `wait_telemetry` / `spin`. Laptop GCS: `source_system=255, source_component=190`.
+
+`takeoff` / `goto` / `land` return when the vehicle ACKs the command, not when the manoeuvre finishes. Use `wait_telemetry` (blocks on recv, not `sleep`). Arm denial: check pre-arm in QGroundControl; this library never force-arms.
+
+## Architecture
+
+```
+app / examples
+    └── FlightController
+            └── MavlinkFlightController (pymavlink)
+                    ├── URI: udp / tcp / serial
+                    └── PX4 / ArduPilot × Copter / Plane / VTOL mode maps
+```
+
+`HEARTBEAT.autopilot`: 12 = PX4, 3 = ArduPilot. `HEARTBEAT.type` selects `COPTER` / `PLANE` / `VTOL`.
+
+Semantic modes: `MANUAL`, `HOLD`, `MISSION`, `RTL`, `LAND`, `TAKEOFF`, `GUIDED`.
+
+PX4: `custom_mode = (sub_mode << 24) | (main_mode << 16)` (same packing for all airframes). ArduPilot uses integer mode ids per vehicle class (ArduCopter GUIDED=4; ArduPlane GUIDED=15).
+
+## Layout
+
+```
+src/drone_fc/     API (English docstrings) + implementation comments in Chinese
+examples/         customer-facing scripts (English)
+tests/            unit tests (no hardware)
+docs/需求文档.md        internal product notes (Chinese)
+docs/供应商集成说明.md  vendor handoff (Chinese)
+LICENSE                 proprietary; pymavlink is LGPLv3
+```
+
+## Environment
+
+Python 3.10+ (3.13 verified).
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[plot]"
+```
+
+`pip install -r requirements.txt` plus `PYTHONPATH=src` still works. After `pip install -e .` you do not need `PYTHONPATH`.
+
+## Protocol mock (no vehicle)
+
+```bash
+PYTHONPATH=src python examples/live_telemetry_plot.py --no-show
+PYTHONPATH=src python examples/mock_px4_mavlink.py   # other terminal
+PYTHONPATH=src python examples/check_connection.py
+PYTHONPATH=src python examples/sitl_takeoff_land.py --hover-s 2
+```
+
+## Units
+
+- Lat/lon: WGS84 degrees
+- Altitude: metres above home (`GLOBAL_POSITION_INT.relative_alt`)
+- Attitude: degrees (`rad * 180/π`)
+- Battery: volts / amperes
+
+Plot offsets from home:
+
+```
+north_m = (lat - home_lat) × 111320
+east_m  = (lon - home_lon) × 111320 × cos(home_lat)
+```
+
+## Tests
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+## API
+
+| Method | Role |
+|--------|------|
+| `connect(timeout_s)` | Open transport **and** wait for autopilot HEARTBEAT |
+| `wait_heartbeat(timeout_s)` | Heartbeat only (already used by `connect`) |
+| `telemetry()` | Non-blocking snapshot (firmware, airframe, capabilities, pose, battery, GPS) |
+| `wait_telemetry(predicate, timeout_s)` | Block on recv until predicate |
+| `spin(duration_s)` | Pump recv for a duration (hover timing) |
+| `arm()` / `disarm()` | Arm / disarm |
+| `set_mode(mode)` | Semantic mode |
+| `takeoff(altitude_m)` | Takeoff command (copter/VTOL ≤100 m, plane ≤500 m) |
+| `goto(lat, lon, alt_m)` | Go to a point |
+| `land()` / `rtl()` | Land / RTL |
+| `upload_mission` / `start_mission` / `pause_mission` / `clear_mission` | Waypoint list |
+| `set_position` / `set_velocity` | Guided/Offboard setpoints (caller must keep streaming) |
+| `set_gimbal` / `center_gimbal` | Gimbal Protocol v2 (capability false until a gimbal is seen) |
+| `disconnect()` | Close |
+
+Failures raise `drone_fc` errors (`HeartbeatTimeoutError`, `ArmDeniedError`, `GpsNotFixedError`, …).

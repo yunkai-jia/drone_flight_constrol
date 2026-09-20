@@ -41,13 +41,13 @@ def parse_connection_uri(uri: str) -> ParsedConnection:
     """
 
     if not isinstance(uri, str) or not uri.strip():
-        raise InvalidArgumentError("uri 必须是非空字符串")
+        raise InvalidArgumentError("uri must be a non-empty string")
 
     text = uri.strip()
     scheme, sep, rest = text.partition(":")
     if not sep or not rest:
         raise InvalidArgumentError(
-            f"无法解析 URI {uri!r}，期望 udp:host:port / tcp:host:port / serial:device:baud"
+            f"cannot parse URI {uri!r}; expected udp:host:port / tcp:host:port / serial:device:baud"
         )
     scheme = scheme.lower()
 
@@ -62,7 +62,7 @@ def parse_connection_uri(uri: str) -> ParsedConnection:
         return ParsedConnection(device=device, baud=baud)
 
     raise InvalidArgumentError(
-        f"不支持的 URI scheme {scheme!r}，仅支持 udp/udpin/udpout/tcp/serial"
+        f"unsupported URI scheme {scheme!r}; use udp/udpin/udpout/tcp/serial"
     )
 
 
@@ -80,10 +80,10 @@ def _split_host_port(rest: str, uri: str) -> tuple[str, int]:
 
     host, sep, port_text = rest.rpartition(":")
     if not sep or not host or not port_text:
-        raise InvalidArgumentError(f"URI {uri!r} 缺少 host:port")
-    port = _parse_int(port_text, "端口")
+        raise InvalidArgumentError(f"URI {uri!r} is missing host:port")
+    port = _parse_int(port_text, "port")
     if port < 1 or port > 65535:
-        raise InvalidArgumentError(f"端口 {port} 超出 [1, 65535]")
+        raise InvalidArgumentError(f"port {port} is outside [1, 65535]")
     return host, port
 
 
@@ -99,10 +99,10 @@ def _split_serial(rest: str, uri: str) -> tuple[str, int]:
 
     device, sep, baud_text = rest.rpartition(":")
     if not sep or not device or not baud_text:
-        raise InvalidArgumentError(f"URI {uri!r} 应为 serial:device:baud")
-    baud = _parse_int(baud_text, "波特率")
+        raise InvalidArgumentError(f"URI {uri!r} must be serial:device:baud")
+    baud = _parse_int(baud_text, "baud")
     if baud < 1200 or baud > 1_000_000:
-        raise InvalidArgumentError(f"波特率 {baud} 超出 [1200, 1000000]")
+        raise InvalidArgumentError(f"baud {baud} is outside [1200, 1000000]")
     return device, baud
 
 
@@ -117,4 +117,4 @@ def _parse_int(text: str, label: str) -> int:
     try:
         return int(text, 10)
     except ValueError as exc:
-        raise InvalidArgumentError(f"{label} 不是整数: {text!r}") from exc
+        raise InvalidArgumentError(f"{label} is not an integer: {text!r}") from exc

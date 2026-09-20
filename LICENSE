@@ -1,0 +1,14 @@
+Copyright (c) 2026 jiauyukai (jyk1028@126.com). All rights reserved.
+
+This software is proprietary. Source code, wheels, and documentation are
+supplied to licensed internal users and contracted vendors only. Replace
+the copyright holder above with the contracting legal entity name before
+any external commercial distribution if that entity differs.
+
+Do not publish, sublicense, or reverse engineer the library except as allowed
+by the commercial contract.
+
+The runtime dependency pymavlink is GNU LGPLv3 (or later). pyserial is
+BSD-licensed. Generated MAVLink message code from mavgen is MIT. Keep
+pymavlink replaceable (pip-installed, not statically merged into a single
+binary) so LGPL obligations can be met.

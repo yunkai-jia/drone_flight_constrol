@@ -1,0 +1,4 @@
+pymavlink>=2.4.41
+
+[plot]
+matplotlib>=3.8.0

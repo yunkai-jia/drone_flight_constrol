@@ -1,32 +1,108 @@
-"""飞控统一接口使用的异常类型。
+"""Exceptions for the unified flight-controller API.
 
-所有公开方法失败时都应抛出 ``DroneFcError`` 的子类，便于调用方统一捕获。
-``command`` / ``result`` 仅在与 MAVLink COMMAND_ACK 相关时有值。
+Public messages are English (customer-facing). All failures raise a
+``DroneFcError`` subclass. ``command`` / ``result`` are set only for
+COMMAND_ACK failures.
 """
 
 from __future__ import annotations
 
 
 class DroneFcError(Exception):
-    """本库所有异常的基类。"""
+    """Base class for every error in this library."""
 
 
 class NotConnectedError(DroneFcError):
-    """在未调用 connect()、或已经 disconnect() 之后调用了需要链路的方法。"""
+    """Called a link method before ``connect()`` or after ``disconnect()``."""
+
+
+class TransportOpenError(DroneFcError):
+    """Socket or serial port could not be opened (path, permission, or network)."""
+
+    def __init__(
+        self,
+        message: str,
+        uri: str | None = None,
+        device: str | None = None,
+    ) -> None:
+        """Args:
+            message: Human-readable English text.
+            uri: Original ``ConnectionConfig.uri``, if known.
+            device: Parsed transport device string (serial path or ``udp:`` host).
+        """
+
+        super().__init__(message)
+        self.uri = uri
+        self.device = device
 
 
 class HeartbeatTimeoutError(DroneFcError):
-    """在给定时限内没有收到 HEARTBEAT，通常表示 URI、防火墙或 SITL 未启动。"""
+    """No flight-controller HEARTBEAT within the timeout (URI, serial, or vehicle offline)."""
+
+    def __init__(
+        self,
+        message: str,
+        packets_seen: int = 0,
+        fc_heartbeats: int = 0,
+        other_heartbeats: int = 0,
+        last_msg_type: str | None = None,
+    ) -> None:
+        """Args:
+            message: Human-readable English text, including a short hint.
+            packets_seen: MAVLink frames received while waiting (including loopback).
+            fc_heartbeats: HEARTBEAT frames from PX4/ArduPilot (0 on timeout).
+            other_heartbeats: HEARTBEAT from GCS, camera, OSD, or similar.
+            last_msg_type: ``get_type()`` of the last frame, or None if none arrived.
+        """
+
+        super().__init__(message)
+        self.packets_seen = int(packets_seen)
+        self.fc_heartbeats = int(fc_heartbeats)
+        self.other_heartbeats = int(other_heartbeats)
+        self.last_msg_type = last_msg_type
+
+
+class LinkLostError(DroneFcError):
+    """Flight-controller HEARTBEAT went stale after a successful ``connect()``."""
+
+    def __init__(self, message: str, age_s: float | None = None) -> None:
+        """Args:
+            message: Human-readable English text.
+            age_s: Seconds since the last FC HEARTBEAT, if known.
+        """
+
+        super().__init__(message)
+        self.age_s = age_s
+
+
+class TelemetryTimeoutError(DroneFcError):
+    """``wait_telemetry`` ended without the predicate becoming true."""
+
+    def __init__(
+        self,
+        message: str,
+        timeout_s: float | None = None,
+        telemetry: object | None = None,
+    ) -> None:
+        """Args:
+            message: Human-readable English text.
+            timeout_s: Wait budget in seconds.
+            telemetry: Last snapshot (may still have None fields).
+        """
+
+        super().__init__(message)
+        self.timeout_s = timeout_s
+        self.telemetry = telemetry
 
 
 class CommandFailedError(DroneFcError):
-    """飞控对 COMMAND_LONG / SET_MODE 返回了非 ACCEPTED 的结果，或等待 ACK 超时。"""
+    """COMMAND_LONG / SET_MODE was not ACCEPTED, or ACK timed out."""
 
     def __init__(self, message: str, command: int | None = None, result: int | None = None) -> None:
-        """输入:
-            message: 人类可读说明。
-            command: MAV_CMD 整型编号，未知时为 None。
-            result: MAV_RESULT 整型编号（0=ACCEPTED），超时时为 None。
+        """Args:
+            message: Human-readable English text.
+            command: MAV_CMD id, or None if unknown.
+            result: MAV_RESULT id (0=ACCEPTED), or None on timeout.
         """
 
         super().__init__(message)
@@ -35,16 +111,35 @@ class CommandFailedError(DroneFcError):
 
 
 class ArmDeniedError(DroneFcError):
-    """解锁被拒绝：未收到心跳、飞控未就绪，或 COMMAND_ACK 为 DENIED。"""
+    """Arm rejected: no heartbeat, pre-arm checks, or COMMAND_ACK DENIED.
+
+    Do not force-arm from this library. Inspect the pre-arm list in
+    QGroundControl or Mission Planner. ``status_text`` is the recent
+    STATUSTEXT buffer when the vehicle sent one; it is not a substitute
+    for the GCS pre-arm list.
+    """
+
+    def __init__(self, message: str, status_text: str | None = None) -> None:
+        """Args:
+            message: Human-readable English text.
+            status_text: Joined STATUSTEXT lines, or None if none were seen.
+        """
+
+        super().__init__(message)
+        self.status_text = status_text
 
 
 class GpsNotFixedError(DroneFcError):
-    """起飞前要求 3D GPS 定位，但当前 fix_type 不足。SITL 可通过 skip_gps_check 跳过。"""
+    """Takeoff requires 3D GPS (fix_type >= 3). SITL may set skip_gps_check."""
 
 
 class UnsupportedModeError(DroneFcError):
-    """请求的语义模式无法映射到当前飞控，或遥测得到的模式不可用于 set_mode。"""
+    """Semantic mode has no mapping for this firmware and airframe, or UNKNOWN was passed to set_mode."""
+
+
+class UnsupportedCapabilityError(DroneFcError):
+    """The connected vehicle cannot perform this action (airframe or not yet implemented)."""
 
 
 class InvalidArgumentError(DroneFcError):
-    """调用参数超出文档约定的类型、单位或数值范围。"""
+    """A call argument is the wrong type, unit, or range."""

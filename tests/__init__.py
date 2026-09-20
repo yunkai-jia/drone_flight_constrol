@@ -1,6 +1,6 @@
 """测试包：把 src 加入路径，便于直接 ``python -m unittest``。
 
-不依赖真机；模式映射与 URI 解析都是纯函数测试。
+不依赖真机；模式映射、URI 解析与机载身份判断都是纯函数测试。
 """
 
 from __future__ import annotations

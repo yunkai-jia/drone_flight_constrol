@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""简易遥测可视化：水平轨迹（东/北，米）+ 高度曲线。
+"""2D telemetry plot: east/north path (m) plus altitude vs time.
 
-默认会拉起协议级模拟端，再执行 起飞 → 平移 → 降落，并用 matplotlib 实时刷新。
-本机有显示器时弹出窗口；无界面时加 ``--no-show`` 只存 PNG。
-
-运行::
-
-    pip install -r requirements.txt
-    PYTHONPATH=src python examples/live_telemetry_plot.py
-
-已有模拟端在跑时::
-
-    PYTHONPATH=src python examples/live_telemetry_plot.py --no-mock
+By default starts the protocol mock, then takeoff → translate → land.
+Use ``--no-mock`` to talk to a real SITL or vehicle on ``--uri``.
+Use ``--no-show`` to save PNG without a window.
 """
 
 from __future__ import annotations
@@ -32,37 +24,43 @@ if str(SRC) not in sys.path:
 import matplotlib
 from matplotlib import rcParams
 
-from drone_fc import ConnectionConfig, MavlinkFlightController
+from drone_fc import (  # noqa: E402
+    ConnectionConfig,
+    DroneFcError,
+    HeartbeatTimeoutError,
+    LinkLostError,
+    MavlinkFlightController,
+    TelemetryTimeoutError,
+    TransportOpenError,
+)
 from drone_fc.types import Telemetry
 
 _METERS_PER_DEG_LAT = 111320.0
 
 
 def _setup_fonts() -> None:
-    """优先用系统中文字体，避免标题变成方框。"""
+    """Prefer a system sans-serif so ASCII titles render; keep the minus sign visible."""
 
     rcParams["font.sans-serif"] = [
-        "PingFang SC",
-        "Hiragino Sans GB",
-        "Songti SC",
-        "Heiti SC",
-        "Arial Unicode MS",
         "DejaVu Sans",
+        "Arial",
+        "Helvetica",
+        "sans-serif",
     ]
     rcParams["axes.unicode_minus"] = False
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="遥测 2D 轨迹与高度图")
-    parser.add_argument("--uri", default="udp:127.0.0.1:14540", help="飞控连接串")
-    parser.add_argument("--altitude", type=float, default=8.0, help="起飞相对高（米），(0, 100]")
+    parser = argparse.ArgumentParser(description="2D telemetry path and altitude plot")
+    parser.add_argument("--uri", default="udp:127.0.0.1:14540", help="Vehicle URI")
+    parser.add_argument("--altitude", type=float, default=8.0, help="Takeoff relative altitude in metres, (0, 100]")
     parser.add_argument(
         "--save",
         default=str(ROOT / "examples" / "last_telemetry_plot.png"),
-        help="结束时保存 PNG 的路径",
+        help="PNG path written at the end",
     )
-    parser.add_argument("--no-show", action="store_true", help="不弹窗，适合无显示器环境")
-    parser.add_argument("--no-mock", action="store_true", help="不启动内置模拟端，使用已有 SITL")
+    parser.add_argument("--no-show", action="store_true", help="No window (headless)")
+    parser.add_argument("--no-mock", action="store_true", help="Do not spawn the protocol mock; use --uri as-is")
     return parser.parse_args()
 
 
@@ -93,7 +91,7 @@ def _offset_lat(home_lat: float, north_m: float) -> float:
 def main() -> int:
     args = parse_args()
     if args.altitude <= 0 or args.altitude > 100:
-        raise SystemExit("--altitude 必须在 (0, 100]")
+        raise SystemExit("--altitude must be in (0, 100]")
 
     if args.no_show:
         matplotlib.use("Agg")
@@ -112,7 +110,7 @@ def main() -> int:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        time.sleep(0.5)
+        # mock 进程随后发心跳；connect() 会阻塞等到 HEARTBEAT，不必 sleep
 
     fc = MavlinkFlightController(ConnectionConfig(uri=args.uri, skip_gps_check=True))
     t0 = time.monotonic()
@@ -124,18 +122,18 @@ def main() -> int:
     home_lon: float | None = None
 
     fig, (ax_map, ax_alt) = plt.subplots(1, 2, figsize=(11, 4.8))
-    fig.suptitle("民用飞控遥测（协议模拟）")
-    (line_path,) = ax_map.plot([], [], "-", color="C0", lw=1.5, label="轨迹")
-    (dot_now,) = ax_map.plot([], [], "o", color="C3", ms=8, label="当前")
-    ax_map.set_xlabel("东向 (m)")
-    ax_map.set_ylabel("北向 (m)")
-    ax_map.set_title("水平轨迹")
+    fig.suptitle("Flight telemetry")
+    (line_path,) = ax_map.plot([], [], "-", color="C0", lw=1.5, label="path")
+    (dot_now,) = ax_map.plot([], [], "o", color="C3", ms=8, label="now")
+    ax_map.set_xlabel("East (m)")
+    ax_map.set_ylabel("North (m)")
+    ax_map.set_title("Horizontal path")
     ax_map.grid(True, alpha=0.3)
     ax_map.legend(loc="upper right")
     (line_alt,) = ax_alt.plot([], [], "-", color="C1", lw=1.5)
-    ax_alt.set_xlabel("时间 (s)")
-    ax_alt.set_ylabel("相对高度 (m)")
-    ax_alt.set_title("高度")
+    ax_alt.set_xlabel("Time (s)")
+    ax_alt.set_ylabel("Relative altitude (m)")
+    ax_alt.set_title("Altitude")
     ax_alt.grid(True, alpha=0.3)
     fig.tight_layout()
     if not args.no_show:
@@ -178,82 +176,88 @@ def main() -> int:
         alts.append(snap.position.altitude_m)
 
     def poll_until(predicate, timeout_s: float, label: str) -> None:
-        """循环读遥测、刷新图，直到条件成立或超时。
+        """Block on recv via wait_telemetry and redraw the plot."""
 
-        输入:
-            predicate: 接收 Telemetry，为 True 则结束。
-            timeout_s: 最长等待秒数，必须 > 0。
-            label: 完成/超时时打印的阶段名。
-        """
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            snap = fc.telemetry()
+        def wrapped(snap: Telemetry) -> bool:
             sample(snap)
             redraw()
-            if predicate(snap):
-                print(label, "完成", flush=True)
-                return
-            time.sleep(0.08)
-        print(label, "超时，继续", flush=True)
+            return predicate(snap)
+
+        fc.wait_telemetry(wrapped, timeout_s)
+        print(label, "done", flush=True)
 
     try:
-        fc.connect(timeout_s=5.0)
-        print("固件:", fc.wait_heartbeat(timeout_s=8.0).value, flush=True)
-        time.sleep(0.3)
-        start = fc.telemetry()
+        autopilot = fc.connect(timeout_s=8.0)
+        print("firmware:", autopilot.value, flush=True)
+        start = fc.wait_telemetry(lambda s: s.position is not None, 3.0)
         sample(start)
         redraw()
         if home_lat is None or home_lon is None:
-            raise SystemExit("未读到位置，无法绘图")
+            raise SystemExit("no position yet; cannot plot")
 
-        print(f"起飞到 {args.altitude} m …", flush=True)
+        print(f"takeoff to {args.altitude} m …", flush=True)
         fc.takeoff(args.altitude)
         poll_until(
             lambda s: s.position is not None
             and s.position.altitude_m is not None
             and s.position.altitude_m >= args.altitude * 0.7,
             12.0,
-            "爬升",
+            "climb",
         )
 
         east_lon = _offset_lon(home_lat, home_lon, 25.0)
         north_lat = _offset_lat(home_lat, 15.0)
-        print("前往东 25 m …", flush=True)
+        print("goto east 25 m …", flush=True)
         fc.goto(home_lat, east_lon, args.altitude)
         poll_until(
             lambda s: s.position is not None
             and _east_north_m(s.position.latitude_deg, s.position.longitude_deg, home_lat, home_lon)[0]
             >= 18.0,
             12.0,
-            "东移",
+            "east",
         )
-        print("前往北 15 m …", flush=True)
+        print("goto north 15 m …", flush=True)
         fc.goto(north_lat, east_lon, args.altitude)
         poll_until(
             lambda s: s.position is not None
             and _east_north_m(s.position.latitude_deg, s.position.longitude_deg, home_lat, home_lon)[1]
             >= 10.0,
             12.0,
-            "北移",
+            "north",
         )
 
-        print("降落 …", flush=True)
+        print("landing …", flush=True)
         fc.land()
         poll_until(
             lambda s: s.position is not None
             and s.position.altitude_m is not None
             and s.position.altitude_m <= 0.4,
             15.0,
-            "降落",
+            "land",
         )
         save_path = Path(args.save)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=120)
-        print(f"已保存 {save_path}", flush=True)
+        print(f"saved {save_path}", flush=True)
         if not args.no_show:
             plt.ioff()
             plt.show()
         return 0
+    except DroneFcError as exc:
+        print(f"link failed: {exc}", flush=True)
+        if isinstance(exc, HeartbeatTimeoutError):
+            print(
+                f"  packets_seen={exc.packets_seen} fc_heartbeats={exc.fc_heartbeats} "
+                f"other_heartbeats={exc.other_heartbeats} last_msg_type={exc.last_msg_type}",
+                flush=True,
+            )
+        elif isinstance(exc, LinkLostError):
+            print(f"  age_s={exc.age_s}", flush=True)
+        elif isinstance(exc, TelemetryTimeoutError):
+            print(f"  timeout_s={exc.timeout_s}", flush=True)
+        elif isinstance(exc, TransportOpenError):
+            print(f"  uri={exc.uri} device={exc.device}", flush=True)
+        return 1
     finally:
         fc.disconnect()
         if mock_proc is not None:

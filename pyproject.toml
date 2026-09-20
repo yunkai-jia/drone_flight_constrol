@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone-fc"
+version = "0.2.0"
+description = "Unified civil Python API for PX4 and ArduPilot (copter, plane, VTOL)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "jiauyukai", email = "jyk1028@126.com" }]
+dependencies = [
+    "pymavlink>=2.4.41",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8.0"]
+dev = []
+
+[project.urls]
+Changelog = "CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+drone_fc = ["py.typed"]

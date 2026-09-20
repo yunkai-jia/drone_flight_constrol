@@ -16,6 +16,13 @@ from drone_fc.mavlink.modes import (
     AP_LOITER,
     AP_RTL,
     AP_STABILIZE,
+    PLANE_AUTO,
+    PLANE_GUIDED,
+    PLANE_LOITER,
+    PLANE_QLAND,
+    PLANE_QLOITER,
+    PLANE_QRTL,
+    PLANE_TAKEOFF,
     PX4_MAIN_ACRO,
     PX4_MAIN_ALTCTL,
     PX4_MAIN_AUTO,
@@ -33,7 +40,7 @@ from drone_fc.mavlink.modes import (
     encode_px4_custom_mode,
     flight_mode_from_heartbeat,
 )
-from drone_fc.types import AutopilotType, FlightMode
+from drone_fc.types import AutopilotType, FlightMode, VehicleClass
 
 
 class Px4CodecTests(unittest.TestCase):
@@ -167,6 +174,70 @@ class ArduPilotMappingTests(unittest.TestCase):
             self.assertEqual(custom_mode_for(AutopilotType.ARDUPILOT, mode), number)
 
 
+class ArduPlaneMappingTests(unittest.TestCase):
+    def test_from_heartbeat(self) -> None:
+        self.assertEqual(
+            flight_mode_from_heartbeat(
+                AutopilotType.ARDUPILOT, PLANE_LOITER, VehicleClass.PLANE
+            ),
+            FlightMode.HOLD,
+        )
+        self.assertEqual(
+            flight_mode_from_heartbeat(
+                AutopilotType.ARDUPILOT, PLANE_GUIDED, VehicleClass.PLANE
+            ),
+            FlightMode.GUIDED,
+        )
+        self.assertEqual(
+            flight_mode_from_heartbeat(
+                AutopilotType.ARDUPILOT, PLANE_TAKEOFF, VehicleClass.PLANE
+            ),
+            FlightMode.TAKEOFF,
+        )
+        self.assertEqual(
+            flight_mode_from_heartbeat(
+                AutopilotType.ARDUPILOT, PLANE_AUTO, VehicleClass.PLANE
+            ),
+            FlightMode.MISSION,
+        )
+
+    def test_to_custom_mode(self) -> None:
+        self.assertEqual(
+            custom_mode_for(AutopilotType.ARDUPILOT, FlightMode.GUIDED, VehicleClass.PLANE),
+            PLANE_GUIDED,
+        )
+        self.assertEqual(
+            custom_mode_for(AutopilotType.ARDUPILOT, FlightMode.TAKEOFF, VehicleClass.PLANE),
+            PLANE_TAKEOFF,
+        )
+
+    def test_land_unsupported_on_plane(self) -> None:
+        with self.assertRaises(UnsupportedModeError):
+            custom_mode_for(AutopilotType.ARDUPILOT, FlightMode.LAND, VehicleClass.PLANE)
+
+
+class ArduVtolMappingTests(unittest.TestCase):
+    def test_q_modes(self) -> None:
+        self.assertEqual(
+            flight_mode_from_heartbeat(
+                AutopilotType.ARDUPILOT, PLANE_QLAND, VehicleClass.VTOL
+            ),
+            FlightMode.LAND,
+        )
+        self.assertEqual(
+            custom_mode_for(AutopilotType.ARDUPILOT, FlightMode.LAND, VehicleClass.VTOL),
+            PLANE_QLAND,
+        )
+        self.assertEqual(
+            custom_mode_for(AutopilotType.ARDUPILOT, FlightMode.HOLD, VehicleClass.VTOL),
+            PLANE_QLOITER,
+        )
+        self.assertEqual(
+            custom_mode_for(AutopilotType.ARDUPILOT, FlightMode.RTL, VehicleClass.VTOL),
+            PLANE_QRTL,
+        )
+
+
 class GuardTests(unittest.TestCase):
     def test_unknown_firmware_reads_as_unknown_mode(self) -> None:
         self.assertEqual(
@@ -178,9 +249,11 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises(UnsupportedModeError):
             custom_mode_for(AutopilotType.PX4, FlightMode.UNKNOWN)
 
-    def test_cannot_set_mode_on_unknown_firmware(self) -> None:
+    def test_cannot_set_mode_on_unknown_airframe(self) -> None:
         with self.assertRaises(UnsupportedModeError):
-            custom_mode_for(AutopilotType.UNKNOWN, FlightMode.HOLD)
+            custom_mode_for(
+                AutopilotType.ARDUPILOT, FlightMode.HOLD, VehicleClass.UNKNOWN
+            )
 
 
 if __name__ == "__main__":

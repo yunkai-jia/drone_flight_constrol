@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""协议级 PX4 模拟端：在本机没有官方 SITL 时，验证客户端能否连通。
+"""Protocol-level PX4 mock: verify the client can connect without official SITL.
 
-本进程扮演飞控：向 GCS 端口发送 HEARTBEAT / 位置 / GPS，并对 SET_MODE、
-COMMAND_LONG 回 COMMAND_ACK。它不是物理仿真，也不包含任务或武器逻辑。
+This process acts as a flight controller: it sends HEARTBEAT / position / GPS
+to the GCS port and ACKs SET_MODE and COMMAND_LONG. It is not a physics
+simulator and contains no mission-strike or weapons logic.
 
-默认对端与客户端一致：客户端 ``udp:127.0.0.1:14540``（监听），本端
-``udpout:127.0.0.1:14540``（发送）。
+Default peer matches the client: the client listens on
+``udp:127.0.0.1:14540``; this mock uses ``udpout:127.0.0.1:14540``.
 
-水平位置按球面近似移动（1 度纬度约 111320 m），供 2D 轨迹图使用。
+Horizontal motion uses a spherical approximation (1 deg latitude ≈ 111320 m)
+for the 2D path plot.
 
-运行::
+Run::
 
-    PYTHONPATH=src python examples/mock_px4_mavlink.py
+    python examples/mock_px4_mavlink.py
 """
 
 from __future__ import annotations
@@ -47,9 +49,9 @@ _CRUISE_MPS = 8.0
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="协议级 PX4 MAVLink 模拟端")
-    parser.add_argument("--host", default="127.0.0.1", help="客户端监听地址")
-    parser.add_argument("--port", type=int, default=14540, help="客户端监听端口")
+    parser = argparse.ArgumentParser(description="Protocol-level PX4 MAVLink mock")
+    parser.add_argument("--host", default="127.0.0.1", help="Client listen address")
+    parser.add_argument("--port", type=int, default=14540, help="Client listen port")
     return parser.parse_args()
 
 
@@ -86,7 +88,7 @@ def _step_horizontal(
 def main() -> int:
     args = parse_args()
     if args.port < 1 or args.port > 65535:
-        raise SystemExit("port 必须在 [1, 65535]")
+        raise SystemExit("port must be in [1, 65535]")
 
     device = f"udpout:{args.host}:{args.port}"
     conn = mavutil.mavlink_connection(device, source_system=1, source_component=1)
@@ -101,7 +103,7 @@ def main() -> int:
     yaw_rad = 0.0
     landing = False
 
-    print(f"模拟端已启动，正在向 {device} 发送心跳（Ctrl+C 结束）", flush=True)
+    print(f"mock started, sending heartbeats to {device} (Ctrl+C to stop)", flush=True)
     last_telem = 0.0
     last_motion = time.monotonic()
 
@@ -135,6 +137,8 @@ def main() -> int:
                     int(time.monotonic() * 1000) & 0xFFFFFFFF,
                 )
 
+            # Block on recv, same as the real controller. timeout 0.05 s is
+            # the loop tick for motion/telemetry; do not busy-spin.
             msg = conn.recv_match(blocking=True, timeout=0.05)
             if msg is None:
                 continue
@@ -190,7 +194,7 @@ def main() -> int:
                     print(f"DO_REPOSITION {target_lat:.6f},{target_lon:.6f}", flush=True)
                 conn.mav.command_ack_send(command, result)
     except KeyboardInterrupt:
-        print("模拟端结束", flush=True)
+        print("mock stopped", flush=True)
         return 0
     finally:
         conn.close()
